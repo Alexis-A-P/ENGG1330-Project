@@ -2,7 +2,6 @@ import os
 import random
 import time
 import sys
-im
 
 game_running = True
 wall = "🧱"
