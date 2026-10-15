@@ -3,6 +3,38 @@ import random
 import time
 import sys
 
+### Cross-platform single key reader setup
+if os.name == 'nt':
+    import msvcrt
+    def get_single_keypress():
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            try:
+                return ch.decode('utf-8').upper()
+            except:
+                return None
+        return None
+else:
+    import tty
+    import termios
+    import select
+    
+    # Configure terminal to raw mode once globally during gameplay to prevent blocking
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    
+    def set_raw_terminal():
+        tty.setcbreak(fd)
+        
+    def restore_terminal():
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    def get_single_keypress():
+        if select.select([sys.stdin], [], [], 0)[0]:
+            ch = sys.stdin.read(1)
+            return ch.upper()
+        return None
+
 game_running = True
 wall = "🧱"
 path = "⚪"
@@ -194,7 +226,6 @@ def enemy_move():
             mazegame[pos["y"]][pos["x"]] = old_tile 
     
     trigger_combat_if_collided()
-    draw()
 
 def getxp_beat_npc(number):
     global exp
@@ -203,21 +234,13 @@ def getxp_beat_npc(number):
 position_mys = None
 stepped_on_enemy = False
 
-def on_press(k):
+def handle_move(direction):
     global dormanttime
     global position_mys
     global stepped_on_enemy
     global game_running
-    if not game_running:
-        return False
-    try:
-        direction = k.char.upper()
-    except AttributeError:
-        if k == keyboard.Key.esc:
-            print("\nExiting the game...")
-            game_running = False
-            return False
-        return
+    
+    direction = direction.upper()
 
     pos = position(player)
     currentx, currenty = pos["x"], pos["y"]
@@ -237,8 +260,6 @@ def on_press(k):
     target_tile = mazegame[targety][targetx]
 
     if target_tile == wall:
-        draw()
-        print("INVALID MOVEMENT!")
         return
 
     if stepped_on_enemy:
@@ -256,19 +277,15 @@ def on_press(k):
         inventory += maze_key
         inventory += "|"
         mazegame[targety][targetx] = player
-        draw()
     elif target_tile == mystery:
-        # mistery()
         position_mys = {"x": targetx, "y": targety}
         mazegame[targety][targetx] = player
-        draw()
     elif target_tile == enemy:
         stepped_on_enemy = True
         dormanttime = time.time() + 10
         mazegame[targety][targetx] = player
         getexp("lost")
         combat(current_level_num - 1)
-        draw()
         trigger_combat_if_collided()
     elif target_tile == terminal:
         mazegame[targety][targetx] = player
@@ -279,7 +296,6 @@ def on_press(k):
     else:
         mazegame[targety][targetx] = player
         getexp("moveblock")
-        draw()
 
 player_response = None
 def main_menu():
@@ -309,31 +325,52 @@ def main_menu():
             game_running = True
             launchgame(selected_level)
             
-            listener = keyboard.Listener(on_press=on_press)
-            listener.start()
+            if os.name != 'nt':
+                set_raw_terminal()
+                
+            last_enemy_move_time = time.time()
+            
             try:
-                while game_running and listener.is_alive():
+                while game_running:
+                    key = get_single_keypress()
+                    if key:
+                        if key == 'Q':
+                            game_running = False
+                            break
+                        elif key in ['W', 'A', 'S', 'D']:
+                            handle_move(key)
+                            draw()
+                    
+                    if time.time() - last_enemy_move_time >= 1.0:
+                        enemy_move()
+                        last_enemy_move_time = time.time()
+                        draw()
+                    
                     trigger_combat_if_collided()
-                    enemy_move()
-                    time.sleep(1)
+                    
                     if health_level <= 0:
+                        if os.name != 'nt':
+                            restore_terminal()
+                        draw()
                         print("YOU LOST")
-                        player_response = input("Do you want to restart?(y/n) ").str1().Ylower()
+                        player_response = input("Do you want to restart?(y/n) ").lower()
                         if player_response == 'y':
                             health_level = 100
                             game_running = False
                         else:
-                            os._exit(0)
+                            sys.exit(0)
+                            
+                    time.sleep(0.03)
 
             except KeyboardInterrupt:
                 print("\nGame Over")
-            
-            if listener.is_alive():
-                listener.stop()
+            finally:
+                if os.name != 'nt':
+                    restore_terminal()
                 
         elif choice == "0":
             print("Goodbye!")
-            os._exit()
+            sys.exit(0)
         else:
             print("Invalid choice, please select 0-6.")
             time.sleep(1)
