@@ -508,6 +508,34 @@ def enemy_move():
         en["pos"] = options[en["dir"]]
 
 
+def puzzle1():
+    clear_screen()
+
+    print("=== The Guardian's Riddle ===")
+    print("Answer correctly to claim the key!")
+    print()
+    print("What has keys but cannot open locks?")
+    print()
+    print("A. A clock")
+    print("B. A piano")
+    print("C. A book")
+    print("D. A candle")
+    print()
+    print("Press A, B, C or D.")
+
+    flush_input()
+
+    while True:
+        answer = wait_for_key({"A", "B", "C", "D"})
+
+        if answer == "B":
+            print("Correct! You obtained the key.")
+            print("Press Enter to return to the maze.")
+            wait_for_key({"\r", "\n"})
+            return True
+        else:
+            print("Wrong answer! Try again.")
+
 def handle_move(k):
     global player_pos
     dx, dy = DIRS[k]
