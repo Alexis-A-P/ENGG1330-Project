@@ -536,6 +536,33 @@ def puzzle1():
         else:
             print("Wrong answer! Try again.")
 
+def puzzle2():
+    clear_screen()
+
+    print("=== The Three Doors ===")
+    print("The key is hidden behind exactly one door.")
+    print("Exactly ONE of these statements is true.")
+    print()
+    print("Door A: The key is behind Door B.")
+    print("Door B: The key is NOT behind Door B.")
+    print("Door C: The key is NOT behind Door A.")
+    print()
+    print("Which door hides the key?")
+    print("Press A, B or C.")
+
+    flush_input()
+
+    while True:
+        answer = wait_for_key({"A", "B", "C"})
+
+        if answer == "A":
+            print("Correct! Door A opens and reveals the key.")
+            print("Press Enter to return to the maze.")
+            wait_for_key({"\r", "\n"})
+            return True
+        else:
+            print("Wrong door! Think again.")
+
 @contextmanager
 def puzzle_input_mode():
     if not IS_WINDOWS:
