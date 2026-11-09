@@ -562,10 +562,19 @@ def handle_move(k):
     player_pos = (tx, ty)
 
     if target == maze_key:
-        inventory.append(maze_key)
-        base_grid[ty][tx] = path
-        getexp("solvepuzzle")
-        set_message(f"{Y}🔑 You found the relic key! +50 XP{W}")
+        if current_level_num == 1:
+            solved = puzzle1()
+        elif current_level_num == 2:
+            solved = puzzle2()
+        elif current_level_num == 3:
+            solved = puzzle3()
+        else:
+            solved = True
+        if solved:
+            inventory.append(maze_key)
+            base_grid[ty][tx] = path
+            getexp("solvepuzzle")
+            set_message(f"{Y}🔑 You obtained the relic key! +100 XP{W}")
     elif target == mystery:
         base_grid[ty][tx] = path
         mystery_event()
