@@ -1,85 +1,147 @@
+"""
+The Lost Temple - a turn-based console puzzle adventure (ENGG1330 group project).
+
+Leo the lion clears three mazes (solve a riddle to get the key, then reach the
+exit), charges down the temple corridor, and fights a different boss at the end
+of every level. Everything is drawn inside an 80 x 24 terminal area.
+
+Run:  python project.py
+"""
 import os
 import re
 import sys
 import time
 import random
 import shutil
+import textwrap
 import unicodedata
+from collections import deque
 from contextlib import contextmanager
 
 IS_WINDOWS = os.name == "nt"
 
 if IS_WINDOWS:
     import msvcrt
-    os.system("")
+    os.system("")  # turns on ANSI colour codes in the Windows console
 else:
     import tty
     import termios
     import select
 
-ARROWS_WIN = {b"H": "W", b"P": "S", b"K": "A", b"M": "D"}
-ARROWS_POSIX = {"A": "W", "B": "S", "C": "D", "D": "A"}
+SCREEN_W, SCREEN_H = 80, 24  # the play area required by the brief
 
-if IS_WINDOWS:
-    def get_single_keypress():
+
+# ============================================================ keyboard ======
+
+WIN_ARROWS = {b"H": "\x1b[A", b"P": "\x1b[B", b"K": "\x1b[D", b"M": "\x1b[C"}
+ARROWS = {"A": "W", "B": "S", "C": "D", "D": "A"}  # escape-code letter -> WASD
+
+
+def read_raw():
+    """Return the keys waiting in the input buffer as text, or None. Never blocks."""
+    if IS_WINDOWS:
         if not msvcrt.kbhit():
             return None
         ch = msvcrt.getch()
-        if ch == b"\x03":
-            raise KeyboardInterrupt
-        if ch in (b"\x00", b"\xe0"):
-            return ARROWS_WIN.get(msvcrt.getch())
-        try:
-            return ch.decode("utf-8").upper()
-        except UnicodeDecodeError:
-            return None
-
-    def flush_input():
-        while msvcrt.kbhit():
-            msvcrt.getch()
-else:
-    def get_single_keypress():
+        if ch in (b"\x00", b"\xe0"):  # arrow keys arrive as two bytes
+            return WIN_ARROWS.get(msvcrt.getch())
+        data = ch.decode("utf-8", errors="ignore")
+    else:
         fd = sys.stdin.fileno()
         if not select.select([fd], [], [], 0)[0]:
             return None
         data = os.read(fd, 32).decode("utf-8", errors="ignore")
-        if not data:
-            return None
-        if data.startswith(("\x1b[", "\x1bO")) and len(data) >= 3:
-            return ARROWS_POSIX.get(data[2])
-        if data[0] == "\x1b":
-            return None
-        return data[0].upper()
+    if "\x03" in data:  # Ctrl+C arriving as a character
+        raise KeyboardInterrupt
+    return data.replace("\r", "\n") or None
 
-    def flush_input():
+
+def get_single_keypress():
+    """One key as an upper-case character (arrows become WASD), or None."""
+    data = read_raw()
+    if not data:
+        return None
+    if data.startswith(("\x1b[", "\x1bO")) and len(data) >= 3:
+        return ARROWS.get(data[2])
+    if data[0] == "\x1b":
+        return None
+    return data[0].upper()
+
+
+def flush_input():
+    """Throw away keys pressed while the game was busy (e.g. during animations)."""
+    if IS_WINDOWS:
+        while msvcrt.kbhit():
+            msvcrt.getch()
+    else:
         termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
 
 
 def wait_for_key(valid=None):
+    """Block until a key in `valid` (any key if None) is pressed.
+    The size check runs while waiting, so play pauses if the terminal shrinks."""
     while True:
+        ensure_size()
         key = get_single_keypress()
         if key and (valid is None or key in valid):
             return key
         time.sleep(0.02)
 
 
+def read_line(max_len):
+    """Read a typed answer with echo and Backspace. The length is capped so the
+    text can never wrap past column 80. Only printable ASCII is accepted."""
+    text = ""
+    sys.stdout.write("\033[?25h")  # show the cursor while typing
+    sys.stdout.flush()
+    try:
+        while True:
+            if ensure_size():  # screen was redrawn after a resize
+                sys.stdout.write(text)
+            data = read_raw()
+            if not data:
+                sys.stdout.flush()
+                time.sleep(0.02)
+                continue
+            if data[0] == "\x1b":  # ignore arrow keys and other escape codes
+                continue
+            for ch in data:
+                if ch == "\n":
+                    return text
+                if ch in ("\x7f", "\b"):
+                    if text:
+                        text = text[:-1]
+                        sys.stdout.write("\b \b")
+                elif ch.isascii() and ch.isprintable() and len(text) < max_len:
+                    text += ch
+                    sys.stdout.write(ch)
+            sys.stdout.flush()
+    finally:
+        sys.stdout.write("\033[?25l")
+        sys.stdout.flush()
+
+
 @contextmanager
 def game_terminal():
+    """Read keys one at a time with a hidden cursor. The terminal is always
+    restored afterwards, even after Ctrl+C or an unexpected error."""
+    old = None
     if not IS_WINDOWS:
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        tty.setcbreak(fd)
-    sys.stdout.write("\033[?25l")
+        old = termios.tcgetattr(sys.stdin.fileno())
+        tty.setcbreak(sys.stdin.fileno())
+    sys.stdout.write("\033[?25l\033[2J\033[H")
     sys.stdout.flush()
     try:
         yield
     finally:
-        sys.stdout.write("\033[?25h\033[0m")
+        sys.stdout.write("\033[0m\033[?25h\033[2J\033[H")
         sys.stdout.flush()
         flush_input()
-        if not IS_WINDOWS:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        if old is not None:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old)
 
+
+# ============================================================ drawing =======
 
 R = "\033[91m"
 G = "\033[92m"
@@ -95,14 +157,42 @@ BOLD = "\033[1m"
 ANSI_RE = re.compile(r"\033\[[0-9;?]*[A-Za-z]")
 
 
-def char_width(ch):
-    if ch in ("\ufe0f", "\u200d") or unicodedata.combining(ch):
-        return 0
-    return 2 if unicodedata.east_asian_width(ch) in ("W", "F", "A") else 1
+def char_widths(text):
+    """Yield (char, columns) for text without colour codes. Wide emoji use 2
+    columns; an emoji selector (U+FE0F) widens the symbol before it to 2."""
+    prev = 0
+    for ch in text:
+        if ch == "\ufe0f":
+            w = 1 if prev == 1 else 0
+            prev = 2
+        elif ch == "\u200d" or unicodedata.combining(ch):
+            w = 0
+        else:
+            w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+            prev = w
+        yield ch, w
 
 
 def vis_len(text):
-    return sum(char_width(c) for c in ANSI_RE.sub("", text))
+    """Number of terminal columns `text` occupies."""
+    return sum(w for _, w in char_widths(ANSI_RE.sub("", text)))
+
+
+def clip(text, width):
+    """Cut text to `width` columns (keeping colour codes) so it never wraps."""
+    if vis_len(text) <= width:
+        return text
+    out, used = [], 0
+    for part in re.split(f"({ANSI_RE.pattern})", text):
+        if ANSI_RE.fullmatch(part):
+            out.append(part)
+            continue
+        for ch, w in char_widths(part):
+            if used + w > width:
+                return "".join(out) + W
+            out.append(ch)
+            used += w
+    return "".join(out) + W
 
 
 def pad(text, width, align="left"):
@@ -117,35 +207,70 @@ def pad(text, width, align="left"):
 
 def box(lines, width=50):
     out = ["╔" + "═" * width + "╗"]
-    out += ["║" + pad(l, width, "center") + "║" for l in lines]
+    out += ["║" + pad(clip(l, width), width, "center") + "║" for l in lines]
     out.append("╚" + "═" * width + "╝")
     return out
 
 
-def clear_screen():
-    sys.stdout.write("\033[2J\033[H")
+last_frame = []  # remembered so the screen can be redrawn after a resize
+
+
+def term_size():
+    """The real terminal size. shutil.get_terminal_size() trusts the COLUMNS and
+    LINES variables, which the course container always sets to 80x24, so the
+    terminal itself is asked first."""
+    try:
+        cols, rows = os.get_terminal_size(sys.stdout.fileno())
+    except (OSError, ValueError):
+        cols = rows = 0
+    if cols <= 0 or rows <= 0:
+        cols, rows = shutil.get_terminal_size((SCREEN_W, SCREEN_H))
+    return cols, rows
+
+
+def write_frame(lines, clear=True):
+    # No newline after the last line, so a full 24-row frame never scrolls.
+    sys.stdout.write(("\033[H\033[J" if clear else "\033[H") + "\n".join(lines))
     sys.stdout.flush()
 
 
-def render(lines, frame_width=0):
-    cols, rows = shutil.get_terminal_size()
-    margin = " " * max(0, (cols - frame_width) // 2) if frame_width else ""
-    out = "\033[H\033[J" + "".join(margin + ln + "\033[K\n" for ln in lines)
-    sys.stdout.write(out)
-    sys.stdout.flush()
-
-
-def check_size(min_cols=96, min_rows=30):
+def ensure_size():
+    """While the terminal is smaller than 80x24, pause and show a resize message
+    cut to fit the space available. Returns True if play was paused."""
+    paused = False
     while True:
-        cols, rows = shutil.get_terminal_size()
-        if cols >= min_cols and rows >= min_rows:
-            return
-        clear_screen()
-        print(f"{R}Terminal too small!{W}")
-        print(f"Need at least {min_cols}x{min_rows}, current is {cols}x{rows}.")
-        print("Resize and press any key, or Q to continue anyway.")
-        if wait_for_key() == "Q":
-            return
+        cols, rows = term_size()
+        if cols >= SCREEN_W and rows >= SCREEN_H:
+            break
+        paused = True
+        msg = [f"Terminal is {cols}x{rows}.",
+               f"Please resize to {SCREEN_W}x{SCREEN_H}.",
+               "The game is paused."]
+        write_frame([m[:max(1, cols - 1)] for m in msg[:max(1, rows - 1)]])
+        time.sleep(0.25)
+    if paused:
+        flush_input()
+        write_frame(last_frame)
+    return paused
+
+
+def render(lines, frame_w=0, clear=True):
+    """Draw a full screen inside the 80x24 area, centred horizontally.
+    Anything beyond row 24 or column 80 is cut off instead of scrolling."""
+    global last_frame
+    lines = lines[:SCREEN_H]
+    widest = max([frame_w] + [vis_len(l) for l in lines])
+    margin = max(0, min((SCREEN_W - (frame_w or widest)) // 2, SCREEN_W - widest))
+    last_frame = [clip(" " * margin + l, SCREEN_W) for l in lines]
+    ensure_size()
+    write_frame(last_frame, clear)
+
+
+def pause_screen(lines, frame_w=0, valid=None):
+    """Show a screen, ignore keys typed earlier, and return the next valid key."""
+    render(lines, frame_w)
+    flush_input()
+    return wait_for_key(valid)
 
 
 def bar(cur, mx, length=20, color=G):
@@ -156,30 +281,85 @@ def bar(cur, mx, length=20, color=G):
     return f"{color}{'█'*filled}{DIM}{'░'*(length-filled)}{W}"
 
 
-STORY_LINES = [
-    f"{BOLD}Game Title: The Lost Temple{W}",
-    "",
-    "Long ago, an ancient temple was built to protect a mysterious treasure",
-    "with extraordinary powers. To keep the treasure safe, the ancient guardians",
+# ============================================================ story =========
+
+STORY_TITLE = f"{BOLD}Game Title: The Lost Temple{W}"
+STORY_PARAGRAPHS = [
+    "Long ago, an ancient temple was built to protect a mysterious treasure "
+    "with extraordinary powers. To keep the treasure safe, the ancient guardians "
     "created a complex maze filled with magical creatures and hidden trials.",
-    "",
-    "Over time, the temple was forgotten, but its ghostly guardians continued",
+    "Over time, the temple was forgotten, but its ghostly guardians continued "
     "to patrol the maze and protect its secrets.",
-    "",
-    "One day, Leo, a brave young lion, discovered the entrance to the lost temple.",
-    "Determined to uncover its mysteries, he decided to venture into the maze and",
+    "One day, Leo, a brave young lion, discovered the entrance to the lost temple. "
+    "Determined to uncover its mysteries, he decided to venture into the maze and "
     "search for the legendary treasure.",
-    "",
-    "However, the journey would not be easy. Leo must navigate the maze, avoid",
-    "wandering ghosts, collect ancient items, and solve puzzles left behind by",
-    "the guardians.",
-    "",
-    "Through exploration and problem-solving, Leo gains experience and develops",
-    "the skills needed to overcome the challenges ahead.",
-    "",
-    "Will Leo succeed in discovering the temple's hidden treasure?",
+    "However, the journey would not be easy. Leo must navigate the maze, avoid "
+    "wandering ghosts, collect ancient items, and solve puzzles left behind by "
+    "the guardians. Will Leo succeed in discovering the temple's hidden treasure? "
     "His adventure begins now.",
 ]
+
+
+def story_lines():
+    lines = [STORY_TITLE, ""]
+    for para in STORY_PARAGRAPHS:
+        lines += textwrap.wrap(para, 70) + [""]
+    return lines + [f"{Y}Press any key to continue...{W}"]
+
+
+def story_screen():
+    pause_screen(box(story_lines(), width=74))
+
+
+LEVEL_NAMES = ["THE STARRY CANYON", "THE SPOOKY MANOR",
+               "THE MYSTERIOUS FOREST", "THE INNER THRONE"]
+LEVEL_EMOJIS = ['⛰️', '🌋', '⛈️', '🏯']
+NUM_LEVELS = len(LEVEL_NAMES)
+
+LEVEL_INTROS = {
+    1: [
+        "Leo decides to rest in a quiet nearby village for the night.",
+        "However, he is unaware that a strange meteorite struck the",
+        "nearby river upstream just hours before.",
+        "After drinking the tainted river water, the villagers have",
+        "begun to transform and behave abnormally...",
+    ],
+    2: [
+        "While tracking the lost temple, a grand yet chilling manor",
+        "suddenly looms ahead in Leo's path.",
+        "As he approaches, he notices an eerie lack of life: plants",
+        "are withered, windows shattered, and dark vines choke the walls.",
+        "Though filled with dread, he knows he must step inside.",
+    ],
+    3: [
+        "Consulting his map, Leo realizes the temple is near. But a bizarre,",
+        "uncharted forest blocks his only route between towering cliffs.",
+        "Stepping inside, the air grows warm and thick with heavy fog,",
+        "and colossal, glowing flora tower above him.",
+        "He spots a vivid, unknown fruit; taking a single bite, a sudden",
+        "surge of primal energy courses through his veins.",
+    ],
+    4: [
+        "Having endured trials of stars, shadows, and ancient flora,",
+        "Leo finally stands before the golden gates of the Inner Sanctuary.",
+        "The legendary treasure gleams in the distance - but guarding it",
+        "sits the ultimate master of the temple:",
+        "The ruthless, cosmic-powered Evil Panda.",
+        "Draw your sword, brave Leo. The final battle for glory begins now!",
+        "",
+        f"{C}Press W to charge down the pillared corridor.{W}",
+    ],
+}
+
+
+def level_intro(level):
+    lines = ["", f"{BOLD}{LEVEL_EMOJIS[level - 1]} LEVEL {level}: "
+             f"{LEVEL_NAMES[level - 1]} {LEVEL_EMOJIS[level - 1]}{W}", ""]
+    lines += LEVEL_INTROS[level] + ["", f"{Y}Press any key to begin.{W}", ""]
+    pause_screen(["", ""] + box(lines, width=72))
+
+
+# ============================================================ maze ==========
 
 wall_1 = "🌠"
 path = "⬛"
@@ -192,25 +372,19 @@ sleeping = "💤"
 lightning = "⚡"
 wall_2 = "🧱"
 wall_3 = "🌳"
-wall_4 = "🏯"
-door = "🚪"
 enemy_2 = "👻"
 enemy_3 = "🦖"
 medkit = "💟"
 ambulance = "🍇"
-map = "🗺️"
+map_icon = "🗺️"
 thief = "🦹"
-thief_pos = None
-thief_active = False
 
 TILES = {
     "#": wall_1, ".": path, "P": player, "E": enemy_1,
     "K": maze_key, "?": mystery, "T": termina_l, "L": lightning,
-    "$": wall_2, "@": wall_3, "^": wall_4, "F": enemy_2, "G": enemy_3, "D": door, "M": medkit, "A": ambulance
+    "$": wall_2, "@": wall_3, "F": enemy_2, "G": enemy_3, "M": medkit, "A": ambulance
 }
-wallist = {wall_1, wall_2, wall_3, wall_4}
-enemylist = {enemy_1, enemy_2, enemy_3}
-LEVEL_EMOJIS = ['⛰️', '🌋', '⛈️', '🏯']
+wallist = {wall_1, wall_2, wall_3}
 
 maze1 = [
     "#########T#########",
@@ -265,9 +439,9 @@ maze3 = [
     "@..M.@.@.@.@.G.@.@.@.@......G@",
     "@.@@.@.@.@.@.@.@.@.@.@@@@@@@.@",
     "@.@@.@.@.@.@.@M@.@.@.@.....M.@",
-    "@.@@.@...@.@.@.@.@.@.@.@@@@@@@",
+    "@.@@.@...@.@.@.@.@.@.@.@.@@@@@",
     "@.@@.@@@@@.@.@.@.@.@.@.@.....@",
-    "@....@...@.@...@.@.@.@.@.@@@@@",
+    "@....@...@.@...@.@.@.@.@.@.@@@",
     "@@@@@@.@.@.@.@@@...@.@.@.@.G.@",
     "@....@.@.@.@...@.@.@.@.@.@@@.@",
     "@.@@.@.@.@.@.@@@@@M@.@.@.@.K.@",
@@ -275,32 +449,28 @@ maze3 = [
     "@.M..@.@.@@@@@@@@@@@@@T@.@...@",
     "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
 ]
-maze4 = [
-    "^^^^^^^^^^^^^^^^",
-    "^.............D^",
-    "^^^^^^^^^^^^^^^^"
-]
 
-enemies = []
-mazetotal = [maze1, maze2, maze3, maze4]
+mazetotal = [maze1, maze2, maze3]  # level 4 is the corridor + final boss
 unlocked_level = [1]
 MAX_HEALTH = 100
 REQUIRE_KEY = True
 DORMANT_TURNS = 3
 LIGHTNING_RESPAWN_CHANCE = 0.12
 MAX_BATTLE_CHARGE = 3
+VIEW_H = 16  # maze rows shown at once; taller mazes scroll with Leo
 
 exp = 0
 health_level = MAX_HEALTH
 battle_charge = 0
-inventory = [map]
+inventory = [map_icon]
 
 current_level_num = 1
 base_grid = []
 player_pos = (0, 0)
-enemy_pos = None
-enemy_direction = None
-enemy_dazed_turns = 0
+enemies = []
+reachable = set()
+thief_pos = None
+thief_active = False
 
 message_text = ""
 message_until = 0
@@ -317,12 +487,9 @@ def set_message(text, seconds=2.4):
 
 
 def heal(emoji):
-    global MAX_HEALTH
     global health_level
     if emoji == medkit:
-        health_level += 20
-        if health_level > MAX_HEALTH:
-            health_level = MAX_HEALTH
+        health_level = min(MAX_HEALTH, health_level + 20)
     elif emoji == ambulance:
         health_level = MAX_HEALTH
 
@@ -332,12 +499,33 @@ def gain_battle_charge(n=1):
     battle_charge = min(MAX_BATTLE_CHARGE, battle_charge + n)
 
 
+def in_grid(x, y):
+    return 0 <= y < len(base_grid) and 0 <= x < len(base_grid[0])
+
+
+def find_reachable(start):
+    """Every cell Leo can walk to from `start` (breadth-first search).
+    Random spawns use this so nothing lands somewhere Leo cannot reach."""
+    seen, queue = {start}, deque([start])
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in DIRS.values():
+            nxt = (x + dx, y + dy)
+            if (nxt not in seen and in_grid(*nxt)
+                    and base_grid[nxt[1]][nxt[0]] not in wallist):
+                seen.add(nxt)
+                queue.append(nxt)
+    return seen
+
+
 def load_level(number):
     global current_level_num, base_grid, player_pos, enemies, inventory
+    global reachable, thief_pos, thief_active
     current_level_num = number
     base_grid = []
     enemies = []
-    inventory = [map]
+    inventory = [map_icon]
+    thief_pos, thief_active = None, False
     for y, row in enumerate(mazetotal[number - 1]):
         cells = []
         for x, ch in enumerate(row):
@@ -349,16 +537,13 @@ def load_level(number):
                 ch = "."
             cells.append(TILES[ch])
         base_grid.append(cells)
+    reachable = find_reachable(player_pos)
     spawn_lightning(4)
 
 
 def all_open_cells():
-    cells = []
-    for y in range(len(base_grid)):
-        for x in range(len(base_grid[0])):
-            if base_grid[y][x] == path and (x, y) != player_pos and (x, y) != enemy_pos:
-                cells.append((x, y))
-    return cells
+    return [(x, y) for (x, y) in reachable
+            if base_grid[y][x] == path and (x, y) != player_pos]
 
 
 def spawn_lightning(count=1):
@@ -385,50 +570,50 @@ def tile_at(x, y):
 
 
 def check_theif_trigger():
-    global thief_active, thief_pos, inventory
-    if current_level_num in (2, 3) and not thief_active and map in inventory:
-        cols = len(base_grid[0])
-        rows = len(base_grid)
-        cx, cy = cols // 2, rows // 2
-        
+    """In levels 2 and 3 a thief steals the map near the middle of the maze."""
+    global thief_active, thief_pos
+    if current_level_num in (2, 3) and not thief_active and map_icon in inventory:
+        cx, cy = len(base_grid[0]) // 2, len(base_grid) // 2
         px, py = player_pos
         if abs(px - cx) <= 2 and abs(py - cy) <= 2:
-            inventory.remove(map)
-            thief_active = True
-            
             open_cells = all_open_cells()
-            if open_cells:
-                thief_pos = random.choice(open_cells)
-            else:
-                thief_pos = (1, 1)
-                
-            set_message(f"{R}🦹 A sneaky Thief appeared and stole your {map} Map! Chase him down!{W}", 4.0)
+            if not open_cells:  # nowhere for the thief to hide: no theft
+                return
+            inventory.remove(map_icon)
+            thief_active = True
+            thief_pos = random.choice(open_cells)
+            set_message(f"{R}🦹 A sneaky Thief stole your {map_icon} Map! Chase him down!{W}", 4.0)
 
 
 def draw_maze():
-    cols = len(base_grid[0])
+    rows, cols = len(base_grid), len(base_grid[0])
     inner = cols * 2
-    lvl_emoji = LEVEL_EMOJIS[current_level_num - 1] 
-    
-    lines = [f"{BOLD}{C}{pad(f'{lvl_emoji} THE LOST TEMPLE - LEVEL {current_level_num} {lvl_emoji}', inner, 'center')}{W}"]
-    
-    lines.append("╔" + "═"*inner + "╗")
-    for y in range(len(base_grid)):
+    # Vertical scrolling window that follows Leo, so tall mazes fit in 24 rows.
+    top = min(max(0, player_pos[1] - VIEW_H // 2), max(0, rows - VIEW_H))
+    bottom = min(rows, top + VIEW_H)
+    up = "▲" if top > 0 else "═"
+    down = "▼" if bottom < rows else "═"
+    half = inner // 2 - 1
+
+    lvl_emoji = LEVEL_EMOJIS[current_level_num - 1]
+    lines = [f"{BOLD}{C}{pad(f'{lvl_emoji} THE LOST TEMPLE - LEVEL {current_level_num} {lvl_emoji}', inner + 2, 'center')}{W}"]
+    lines.append("╔" + "═" * half + up + "═" * (inner - half - 1) + "╗")
+    for y in range(top, bottom):
         lines.append("║" + "".join(tile_at(x, y) for x in range(cols)) + "║")
-    lines.append("╚" + "═"*inner + "╝")
+    lines.append("╚" + "═" * half + down + "═" * (inner - half - 1) + "╝")
 
     msg = message_text if time.time() < message_until else ""
     items = " ".join(inventory) if inventory else f"{DIM}(empty){W}"
-
+    charge = f"{Y}{'⚡' * battle_charge}{DIM}{'·' * (MAX_BATTLE_CHARGE - battle_charge)}{W}"
     lines += [
-        f" HP  {bar(health_level, MAX_HEALTH, 20, G)} {max(0,health_level):>3}/{MAX_HEALTH}",
-        f" XP  {Y}{exp}{W}   Boss Charge: {Y}{'⚡'*battle_charge}{DIM}{'·'*(MAX_BATTLE_CHARGE-battle_charge)}{W}",
+        f" HP {bar(health_level, MAX_HEALTH, 20, G)} {max(0, health_level):>3}/{MAX_HEALTH}"
+        f"   XP {Y}{exp}{W}   Boss Charge {charge}",
         f" Items: {items}",
         f" {msg}",
-        f" {DIM}{maze_key} key  {mystery} mystery  {lightning} boss-charge  {enemy_1} enemy  {termina_l} exit{W}",
-        f" {DIM}WASD/Arrows move, Q quit{W}",
+        f" {DIM}WASD/arrows move, Q menu   {maze_key} key  {mystery} mystery  "
+        f"{lightning} charge  {termina_l} exit{W}",
     ]
-    render(lines, inner + 2)
+    render(lines, SCREEN_W - 4)
 
 
 def getexp(method):
@@ -467,20 +652,19 @@ def combat():
 
 
 def check_collision():
-    global thief_active, thief_pos, inventory
-    if thief_active and current_level_num in (2, 3) and player_pos == thief_pos:
+    global thief_active, thief_pos
+    if thief_active and player_pos == thief_pos:
         thief_active = False
         thief_pos = None
-        if map not in inventory:
-            inventory.append(map)
-        set_message(f"{G}🦹 You caught the thief and retrieved your {map} map!{W}", 3.0)
+        if map_icon not in inventory:
+            inventory.append(map_icon)
+        set_message(f"{G}🦹 You caught the thief and got your {map_icon} map back!{W}", 3.0)
         return True
     for en in enemies:
         if en["dazed"] <= 0 and player_pos == en["pos"]:
             combat()
             en["dazed"] = DORMANT_TURNS
-            getexp("lost")
-            set_message(f"{R}{en['icon']} Enemy strikes! Dazed for {DORMANT_TURNS} turns.{W}")
+            set_message(f"{R}{en['icon']} Enemy strikes! -25 HP. It sleeps for {DORMANT_TURNS} turns.{W}")
             return True
     return False
 
@@ -495,7 +679,7 @@ def enemy_move():
         options = {}
         for name, (dx, dy) in ENEMY_DIRS.items():
             nx, ny = x + dx, y + dy
-            if base_grid[ny][nx] not in wallist and base_grid[ny][nx] != termina_l:
+            if in_grid(nx, ny) and base_grid[ny][nx] not in wallist and base_grid[ny][nx] != termina_l:
                 options[name] = (nx, ny)
         if not options:
             continue
@@ -508,160 +692,119 @@ def enemy_move():
         en["pos"] = options[en["dir"]]
 
 
-def puzzle1():
-    clear_screen()
+# ------------------------------------------------------------ riddles -------
 
-    print("=== The Guardian's Riddle ===")
-    print("Answer correctly to claim the key!")
-    print()
-    print("What has keys but cannot open locks?")
-    print()
-    print("A. A clock")
-    print("B. A piano")
-    print("C. A book")
-    print("D. A candle")
-    print()
-    print("Press A, B, C or D.")
+def puzzle_screen(title, body, feedback="", prompt=""):
+    lines = box(["", f"{BOLD}{title}{W}", ""] + body + ["", feedback, ""], width=70)
+    render([""] + lines + ["", prompt])
 
+
+def choice_puzzle(title, body, options, answer, success):
+    """Multiple-choice riddle. Returns True when solved, False if Leo steps away."""
+    feedback = ""
     flush_input()
-
     while True:
-        answer = wait_for_key({"A", "B", "C", "D"})
-
-        if answer == "B":
-            print("Correct! You obtained the key.")
-            print("Press Enter to return to the maze.")
-            wait_for_key({"\r", "\n"})
+        puzzle_screen(title, body, feedback,
+                      f"  Press {', '.join(sorted(options))} to answer, or Q to step away.")
+        key = wait_for_key(options | {"Q"})
+        if key == "Q":
+            return False
+        if key == answer:
+            puzzle_screen(title, body, f"{G}{success}{W}", "  Press any key to return to the maze.")
+            flush_input()
+            wait_for_key()
             return True
-        else:
-            print("Wrong answer! Try again.")
+        feedback = f"{R}{key} is wrong! Try again.{W}"
+
+
+def puzzle1():
+    return choice_puzzle(
+        "=== The Guardian's Riddle ===",
+        ["Answer correctly to claim the key!", "",
+         "What has keys but cannot open locks?", "",
+         "A. A clock", "B. A piano", "C. A book", "D. A candle"],
+        {"A", "B", "C", "D"}, "B", "Correct! You obtained the key.")
+
 
 def puzzle2():
-    clear_screen()
+    return choice_puzzle(
+        "=== The Three Doors ===",
+        ["The key is hidden behind exactly one door.",
+         "Exactly ONE of these statements is true.", "",
+         "Door A: The key is behind Door B.",
+         "Door B: The key is NOT behind Door B.",
+         "Door C: The key is NOT behind Door A.", "",
+         "Which door hides the key?"],
+        {"A", "B", "C"}, "A", "Correct! Door A opens and reveals the key.")
 
-    print("=== The Three Doors ===")
-    print("The key is hidden behind exactly one door.")
-    print("Exactly ONE of these statements is true.")
-    print()
-    print("Door A: The key is behind Door B.")
-    print("Door B: The key is NOT behind Door B.")
-    print("Door C: The key is NOT behind Door A.")
-    print()
-    print("Which door hides the key?")
-    print("Press A, B or C.")
 
-    flush_input()
+SPHINX_ANSWERS = {"human", "a human", "humans", "person", "a person",
+                  "man", "a man", "human being", "a human being"}
 
-    while True:
-        answer = wait_for_key({"A", "B", "C"})
-
-        if answer == "A":
-            print("Correct! Door A opens and reveals the key.")
-            print("Press Enter to return to the maze.")
-            wait_for_key({"\r", "\n"})
-            return True
-        else:
-            print("Wrong door! Think again.")
-
-@contextmanager
-def puzzle_input_mode():
-    if not IS_WINDOWS:
-        fd = sys.stdin.fileno()
-        previous_settings = termios.tcgetattr(fd)
-
-        answer_settings = termios.tcgetattr(fd)
-        answer_settings[3] |= termios.ICANON | termios.ECHO
-        termios.tcsetattr(fd, termios.TCSADRAIN, answer_settings)
-
-    sys.stdout.write("\033[?25h")
-    sys.stdout.flush()
-
-    try:
-        yield
-    finally:
-        if not IS_WINDOWS:
-            termios.tcsetattr(fd, termios.TCSADRAIN, previous_settings)
-
-        sys.stdout.write("\033[?25l")
-        sys.stdout.flush()
-        flush_input()
 
 def puzzle3():
-    clear_screen()
+    """Typed riddle. An empty answer lets Leo step away and come back later."""
+    title = "=== The Sphinx's Riddle ==="
+    body = ["Deep in the forest, a sphinx guards an ancient key.",
+            "Sphinx: Solve my riddle to claim the key.", "",
+            "What creature walks on four legs in the morning,",
+            "two at noon, and three in the evening?", "",
+            f"{DIM}Type in English and press Enter (empty answer = step away).{W}"]
+    feedback = ""
     flush_input()
+    while True:
+        puzzle_screen(title, body, feedback, "  Your answer: ")
+        answer = " ".join(read_line(30).lower().split())  # tidy extra spaces
+        if not answer:
+            return False
+        if answer in SPHINX_ANSWERS:
+            puzzle_screen(title, [
+                "Correct! The answer is a human.",
+                "A baby crawls on hands and knees.",
+                "An adult walks on two legs.",
+                "An elderly person may use a walking stick.", "",
+                "The sphinx allows you to take the key."],
+                "", "  Press any key to return to the maze.")
+            flush_input()
+            wait_for_key()
+            return True
+        feedback = f"{R}Wrong! Hint: think about the stages of life, not the time of day.{W}"
 
-    with puzzle_input_mode():
-        print("=== The Sphinx's Riddle ===")
-        print("Deep in the forest, a sphinx guards an ancient key.")
-        print("Sphinx: Solve my riddle to claim the key.")
-        print()
-        print("What creature walks on four legs in the morning,")
-        print("two at noon, and three in the evening?")
-        print()
-        print("Type your answer in English, then press Enter.")
 
-        while True:
-            answer = input("Your answer: ").strip().lower()
+PUZZLES = {1: puzzle1, 2: puzzle2, 3: puzzle3}
 
-            if answer in [
-                "human", "a human", "humans",
-                "person", "a person",
-                "man", "a man", "human being", "a human being"
-            ]:
-                print("Correct! The answer is a human.")
-                print("A baby crawls on hands and knees.")
-                print("An adult walks on two legs.")
-                print("An elderly person may use a walking stick.")
-                print()
-                print("The sphinx allows you to take the key.")
-
-                input("Press Enter to return to the maze...")
-                return True
-
-            else:
-                print("Wrong answer! Try again.")
-                print("Hint: Think about the stages of life,")
-                print("not the time of day.")
 
 def handle_move(k):
     global player_pos
     dx, dy = DIRS[k]
     tx, ty = player_pos[0] + dx, player_pos[1] + dy
 
-    if not (0 <= ty < len(base_grid) and 0 <= tx < len(base_grid[0])):
+    if not in_grid(tx, ty):
         return None, False
     target = base_grid[ty][tx]
     if target in wallist:
         return None, False
 
-    if target == termina_l: 
+    if target == termina_l:
         if REQUIRE_KEY and maze_key not in inventory:
-            set_message(f"{Y}⛺ The gate is sealed. Find {maze_key}.{W}")
+            set_message(f"{Y}⛺ The gate is sealed. Find the {maze_key} first.{W}")
             return None, False
-            
-        if map not in inventory:
-            set_message(f"{R}🗺️ You lost your Map! Find the thief and get it back before leaving!{W}", 3.0)
+        if map_icon not in inventory:
+            set_message(f"{R}{map_icon} You lost your Map! Catch the thief before leaving!{W}", 3.0)
             return None, False
-
         player_pos = (tx, ty)
         return "win", True
 
     player_pos = (tx, ty)
 
     if target == maze_key:
-        if current_level_num == 1:
-            solved = puzzle1()
-        elif current_level_num == 2:
-            solved = puzzle2()
-        elif current_level_num == 3:
-            solved = puzzle3()
-        else:
-            solved = True
-        if solved:
+        if PUZZLES[current_level_num]():
             inventory.append(maze_key)
             base_grid[ty][tx] = path
             getexp("solvepuzzle")
             set_message(f"{Y}🔑 You obtained the relic key! +100 XP{W}")
+        else:
+            set_message(f"{DIM}The riddle waits. Step on the {maze_key} again to retry.{W}", 3.0)
     elif target == mystery:
         base_grid[ty][tx] = path
         mystery_event()
@@ -672,133 +815,301 @@ def handle_move(k):
     elif target == medkit:
         heal(medkit)
         base_grid[ty][tx] = path
+        set_message(f"{G}💟 +20 HP{W}")
     elif target == ambulance:
         heal(ambulance)
         base_grid[ty][tx] = path
+        set_message(f"{G}🍇 Fully healed!{W}")
     else:
         getexp("moveblock")
-        
+
     check_theif_trigger()
     return None, True
 
 
 def play_level(level_number):
-    global health_level, inventory, battle_charge, enemy_direction, message_text
+    global health_level, battle_charge, message_text
     load_level(level_number)
     health_level = MAX_HEALTH
     battle_charge = 0
-    enemy_direction = None
     message_text = ""
 
-    with game_terminal():
-        check_size()
-        clear_screen()
-        draw_maze()
+    flush_input()
+    draw_maze()
+    while True:
+        k = wait_for_key()
+        if k == "Q":
+            return "quit"
 
-        while True:
-            k = wait_for_key()
-            if k == "Q":
-                return "quit"
-
-            acted = False
-            if k in DIRS:
-                status, acted = handle_move(k)
-                if status == "win":
-                    set_message(f"{G}⛺ Leo reaches the inner shrine!{W}", 1.1)
-                    draw_maze()
-                    time.sleep(0.9)
-                    return "won"
-
-            if acted:
-                enemy_move()
-                check_collision()
-                maybe_respawn_lightning()
-
-            if health_level <= 0:
+        acted = False
+        if k in DIRS:
+            status, acted = handle_move(k)
+            if status == "win":
+                set_message(f"{G}⛺ Leo reaches the inner shrine!{W}", 1.1)
                 draw_maze()
-                return "lost"
+                time.sleep(0.9)
+                return "won"
 
-            draw_maze()
+        if acted:
+            check_collision()  # Leo walked into an enemy
+            enemy_move()
+            check_collision()  # an enemy walked into Leo
+            maybe_respawn_lightning()
+
+        draw_maze()
+        if health_level <= 0:
+            time.sleep(0.6)
+            return "lost"
 
 
-INNER = 92
+# ============================================================ corridor ======
+
+CORRIDOR_STEPS = 16 * 4          # quarter-steps from the entrance to the gate
+CORRIDOR_PILLARS = [1, 3, 5, 7, 9, 11, 13, 15]
+
+
+def corridor_frame(pos_sub):
+    """One 80x24 frame of the pillared corridor seen from Leo's position."""
+    pos = pos_sub / 4.0
+    screen = [[' ' for _ in range(SCREEN_W)] for _ in range(SCREEN_H)]
+
+    # 1. Floor: a trapezium whose stripes scroll as Leo moves forward.
+    for y in range(13, SCREEN_H - 1):
+        dy = y - 12
+        half_w = int(dy * 3.8)
+        for x in range(max(0, 40 - half_w), min(SCREEN_W, 40 + half_w)):
+            grid_z = int(dy + pos * 2) % 4
+            if grid_z == 0:
+                screen[y][x] = '-' if x % 4 != 0 else '+'
+            elif grid_z == 2:
+                screen[y][x] = '.' if x % 2 == 0 else '_'
+
+    # 2. The glowing gate grows as Leo gets closer.
+    dist_to_door = (CORRIDOR_STEPS - pos_sub) / 4.0
+    if dist_to_door <= 0:
+        door_msg = " * YOU REACHED THE ANCIENT GATE! * "
+        start_x = (SCREEN_W - len(door_msg)) // 2
+        for i, char in enumerate(door_msg):
+            screen[11][start_x + i] = char
+    else:
+        gate_half_w = min(35, max(3, int(28 / dist_to_door)))
+        gate_half_h = min(10, max(2, int(9 / dist_to_door)))
+        door_top, door_bottom = 12 - gate_half_h, 12 + gate_half_h
+        door_left, door_right = 40 - gate_half_w, 40 + gate_half_w
+        shimmer = int(time.time() * 6)
+        for y in range(max(0, door_top), min(SCREEN_H - 1, door_bottom)):
+            for x in range(max(0, door_left), min(SCREEN_W, door_right)):
+                if y in (door_top, door_bottom - 1) or x in (door_left, door_right - 1):
+                    screen[y][x] = '#'
+                else:
+                    screen[y][x] = '*' if (x + y + shimmer) % 3 == 0 else 'o'
+
+    # 3. Pillars on both sides: nearer pillars are wider, taller and further out.
+    for p_pos in CORRIDOR_PILLARS:
+        rel_dist = p_pos - pos
+        if rel_dist <= 0:
+            continue
+        offset = max(2, int(35 / rel_dist))
+        half_h = min(11, max(1, int(11 / rel_dist)))
+        p_width = max(1, min(7, int(8 - rel_dist)))
+        for start in (40 - offset - p_width + 1, 40 + offset):
+            for y in range(max(0, 12 - half_h), min(SCREEN_H - 1, 12 + half_h)):
+                for w in range(p_width):
+                    x = start + w
+                    if not 0 <= x < SCREEN_W:
+                        continue
+                    if p_width == 1:
+                        screen[y][x] = '|'
+                    elif w == 0:
+                        screen[y][x] = '['
+                    elif w == p_width - 1:
+                        screen[y][x] = ']'
+                    else:
+                        screen[y][x] = '#' if y % 2 != 0 else '='
+
+    # 4. Status bar on the last row.
+    status = f" [POS: {pos:.2f}/{CORRIDOR_STEPS / 4}] Press [W] to Charge | [Q] Quit "
+    screen[SCREEN_H - 1] = list(status[:SCREEN_W].ljust(SCREEN_W))
+    return ["".join(row) for row in screen]
+
+
+def corridor_scene():
+    """Level 4 cut-scene: press W once and Leo charges down the corridor to the
+    ancient gate. Returns False if the player quits to the menu."""
+    pos_sub, moving = 0, False
+    flush_input()
+    render(corridor_frame(pos_sub))
+    while pos_sub < CORRIDOR_STEPS:
+        ensure_size()
+        key = get_single_keypress()
+        if key == "Q":
+            return False
+        if key == "W":
+            moving = True
+        if moving:
+            pos_sub += 1
+            render(corridor_frame(pos_sub), clear=False)  # overwrite: no flicker
+        time.sleep(0.075)
+    time.sleep(1.5)       # show the gate message
+    render([])            # fade to black
+    time.sleep(1.0)
+    return True
+
+
+# ============================================================ boss battle ===
+
+INNER = 76
 FRAME_W = INNER + 2
-
-BOSS_MOVES = [
-    {"name": "Shadow Swipe", "value": 10, "kind": "dmg"},
-    {"name": "Bamboo Crush", "value": 14, "kind": "dmg"},
-    {"name": "Dread Howl", "value": 2, "kind": "drain"},
-]
+LOG_ROWS = 4
+ENERGY_FLOOR = 2      # energy drains never take Leo below this
+SHIELD_FACTOR = 0.5   # a shielded hit still deals half damage
 
 DECK = [
-    {"name": "Claw Strike", "icon": "🗡️", "cost": 2, "type": "dmg", "val": 10},
-    {"name": "Guard Stance", "icon": "🛡️", "cost": 2, "type": "armor", "val": 9},
-    {"name": "Herbal Heal", "icon": "💚", "cost": 3, "type": "heal", "val": 12},
-    {"name": "Sun Fang", "icon": "🔥", "cost": 4, "type": "dmg", "val": 18},
-    {"name": "Focus Breath", "icon": "✨", "cost": 0, "type": "energy", "val": 2},
+    {"name": "Claw Strike", "icon": "🐾", "cost": 2, "type": "dmg", "val": 12},
+    {"name": "Guard Stance", "icon": "✋", "cost": 1, "type": "armor", "val": 12},
+    {"name": "Herbal Heal", "icon": "💚", "cost": 3, "type": "heal", "val": 15},
+    {"name": "Sun Fang", "icon": "🔥", "cost": 4, "type": "dmg", "val": 22},
+    {"name": "Focus Breath", "icon": "✨", "cost": 0, "type": "energy", "val": 3},
 ]
+CARD_KEYS = {str(i) for i in range(1, len(DECK) + 1)}
+
+# One boss per level, each with its own look and behaviour. Difficulty rises
+# with the level: more HP, harder hits, more shielding, then RAGE at level 4.
+#   pattern: "cycle" repeats moves in order, "random" picks one each turn
+#   shield:  chance an attack is shielded (deals SHIELD_FACTOR damage)
+#   rage:    damage multiplier once the boss drops to half HP (1.0 = none)
+#   eyes:    (calm, enraged) eyes drawn into the art
+BOSSES = {
+    1: {"name": "METEOR GOLEM", "icon": "🗿", "hp": 60, "pattern": "cycle",
+        "shield": 0.0, "shield_text": "", "rage": 1.0, "eyes": ("o   o", "o   o"),
+        "trait": "Slow and predictable: its moves repeat in the same order.",
+        "moves": [{"name": "Rock Slam", "kind": "dmg", "value": 9},
+                  {"name": "Pebble Toss", "kind": "dmg", "value": 5},
+                  {"name": "Cooling Down", "kind": "rest", "value": 0}],
+        "art": [r"   _________   ",
+                r"  /  {eyes}  \  ",
+                r" |   [===]   | ",
+                r"/|___________|\ ",
+                r"   _|_|  |_|_   "]},
+    2: {"name": "MANOR WRAITH", "icon": "👻", "hp": 75, "pattern": "random",
+        "shield": 0.35, "shield_text": "The wraith fades out of reach!", "rage": 1.0,
+        "eyes": ("O   O", "O   O"),
+        "trait": "Fades often: faded hits only deal half damage.",
+        "moves": [{"name": "Ghost Claw", "kind": "dmg", "value": 9},
+                  {"name": "Grave Chill", "kind": "dmg", "value": 6},
+                  {"name": "Chilling Wail", "kind": "drain", "value": 1}],
+        "art": [r"   .-~~~~~-.   ",
+                r"  (  {eyes}  )  ",
+                r"   |   o   |   ",
+                r"   |       |   ",
+                r"   \/\/\/\/\   "]},
+    3: {"name": "THORN TREANT", "icon": "🌲", "hp": 80, "pattern": "random",
+        "shield": 0.15, "shield_text": "Bark armour hardens!", "rage": 1.0,
+        "eyes": ("@   @", "@   @"),
+        "trait": "Regrows: it can heal itself, so keep up the pressure.",
+        "moves": [{"name": "Vine Lash", "kind": "dmg", "value": 9},
+                  {"name": "Thorn Burst", "kind": "dmg", "value": 12},
+                  {"name": "Root Mend", "kind": "heal", "value": 8}],
+        "art": [r" \\|//   \\|// ",
+                r"  (  {eyes}  )  ",
+                r"   \  ___  /   ",
+                r" --|=======|-- ",
+                r"   /|\   /|\   "]},
+    4: {"name": "THE EVIL PANDA", "icon": "🐼", "hp": 100, "pattern": "random",
+        "shield": 0.2, "shield_text": "Panda raises a cursed shield!", "rage": 1.25,
+        "eyes": ("ಠ ಠ", "◣ ◢"),
+        "trait": "Below half HP it enters RAGE and hits 25% harder.",
+        "moves": [{"name": "Shadow Swipe", "kind": "dmg", "value": 10},
+                  {"name": "Bamboo Crush", "kind": "dmg", "value": 13},
+                  {"name": "Dread Howl", "kind": "drain", "value": 2}],
+        "art": [r"     ʕ{eyes}ʔ      ",
+                r"    /|  _  |\     ",
+                r"   / | |_| | \    ",
+                r"  /  |_____|  \   ",
+                r"     /_____\      "]},
+}
 
 hero = {}
 boss = {}
 battle_logs = []
 battle_turn = 1
-panda_pose = 0
-panda_shield = False
+boss_pose = 0
+boss_shield = False
+
+
+def pick_boss_move():
+    """Choose the boss's next move (shown to the player as its Intent).
+    A drain is never picked twice in a row, so energy loss stays manageable."""
+    cfg = boss["cfg"]
+    if cfg["pattern"] == "cycle":
+        move = cfg["moves"][boss["move_i"] % len(cfg["moves"])]
+        boss["move_i"] += 1
+        return move
+    last = boss.get("next_move")
+    choices = [m for m in cfg["moves"]
+               if not (last and last["kind"] == "drain" and m["kind"] == "drain")]
+    return random.choice(choices)
 
 
 def reset_battle(level, start_bonus_energy=0):
-    global hero, boss, battle_logs, battle_turn, panda_pose, panda_shield
+    global hero, boss, battle_logs, battle_turn, boss_pose, boss_shield
     hero = {
         "hp": 100, "max_hp": 100,
         "armor": 0,
         "energy": min(10, 5 + start_bonus_energy), "max_energy": 10
     }
-    boss_hp = 100 + (level - 1) * 15
-    boss = {
-        "name": "THE EVIL PANDA",
-        "hp": boss_hp, "max_hp": boss_hp,
-        "phase": 1,
-        "next_move": random.choice(BOSS_MOVES)
-    }
+    cfg = BOSSES[level]
+    boss = {"cfg": cfg, "name": cfg["name"], "hp": cfg["hp"], "max_hp": cfg["hp"],
+            "phase": 1, "move_i": 0, "next_move": None}
+    boss["next_move"] = pick_boss_move()
     battle_logs = []
     battle_turn = 1
-    panda_pose = 0
-    panda_shield = False
+    boss_pose = 0
+    boss_shield = False
 
 
 def blog(msg):
     battle_logs.append(msg)
-    if len(battle_logs) > 6:
+    if len(battle_logs) > LOG_ROWS:
         battle_logs.pop(0)
 
 
-def panda_art(enraged=False, pose=0, shield=False):
-    eyes = "◣◢" if enraged else "ಠ ಠ"
-    if pose % 2 == 0:
-        lines = [
-            f"              ʕ{eyes}ʔ",
-            r"             /|  _  |\ ",
-            r"            / | |_| | \ ",
-            r"           /  |_____|  \ ",
-            r"              /   \      ",
-            r"             /_____\     ",
-        ]
-    else:
-        lines = [
-            f"          ʕ{eyes}ʔ",
-            r"         /|  _  |\      ",
-            r"        / | |_| | \     ",
-            r"       /  |_____|  \    ",
-            r"          /   \         ",
-            r"         /_____\        ",
-        ]
-    if shield:
-        lines[1] += "   🛡️"
-    return lines
+def boss_art():
+    """The boss picture, swaying left/right each turn and centred in the frame."""
+    cfg = boss["cfg"]
+    eyes = cfg["eyes"][boss["phase"] - 1]
+    rows = [row.replace("{eyes}", eyes) for row in cfg["art"]]
+    if boss_shield:
+        rows[1] += " [#]"
+    shift = 2 if boss_pose % 2 else -2
+    left = max(0, (INNER - max(vis_len(r) for r in rows)) // 2 + shift)
+    return [" " * left + r for r in rows]
+
+
+def move_effect(move):
+    """Short description of a boss move for the Intent line."""
+    if move["kind"] == "dmg":
+        return f"{boss_damage(move)} dmg"
+    if move["kind"] == "drain":
+        return f"-{move['value']} energy"
+    if move["kind"] == "heal":
+        return f"+{move['value']} HP"
+    return "no attack"
+
+
+def boss_damage(move):
+    return round(move["value"] * boss["cfg"]["rage"]) if boss["phase"] == 2 else move["value"]
+
+
+def card_label(i, card):
+    effect = {"dmg": f"{card['val']} dmg", "armor": f"+{card['val']} armor",
+              "heal": f"+{card['val']} HP", "energy": f"+{card['val']} EN"}[card["type"]]
+    label = f"[{i}] {card['icon']} {card['name']} ({card['cost']}EN, {effect})"
+    return label if card["cost"] <= hero["energy"] else f"{DIM}{label}{W}"
 
 
 def boxline(content):
-    return "║" + pad(content, INNER) + "║"
+    return "║" + pad(clip(content, INNER), INNER) + "║"
 
 
 def two_col(left, right):
@@ -812,40 +1123,45 @@ def section(title):
     return "╟" + "─"*side + label + "─"*(INNER - side - len(label)) + "╢"
 
 
-def draw_battle(flash=None):
+def draw_battle(flash=None, status=None):
+    cfg = boss["cfg"]
     enraged = boss["phase"] == 2
     phase = f"{R}{BOLD}[RAGE]{W}" if enraged else f"{DIM}[CALM]{W}"
+    move = boss["next_move"]
 
     lines = ["╔" + "═"*INNER + "╗"]
-    lines.append(boxline(two_col(
-        f" {BOLD}🐼 {boss['name']}{W} {phase}",
-        f"{DIM}Turn {battle_turn}{W} "
-    )))
-    lines.append(boxline(f"  Boss HP: {bar(boss['hp'], boss['max_hp'], 42, R)} {max(0,boss['hp'])}/{boss['max_hp']}"))
-    lines.append(boxline(f"  Intent: {Y}{boss['next_move']['name']}{W}    {DIM}(Boss retaliates after each player action){W}"))
+    lines.append(boxline(two_col(f" {BOLD}{cfg['icon']} {boss['name']}{W} {phase}",
+                                 f"{DIM}Turn {battle_turn}{W} ")))
+    lines.append(boxline(f"  Boss HP: {bar(boss['hp'], boss['max_hp'], 40, R)} "
+                         f"{max(0, boss['hp'])}/{boss['max_hp']}"))
+    lines.append(boxline(f"  Intent: {Y}{move['name']} ({move_effect(move)}){W}"
+                         f"   {DIM}the boss acts after each card{W}"))
 
-    art_color = R if flash == "boss" else WHITE
-    for row in panda_art(enraged, panda_pose, panda_shield):
-        lines.append(boxline(f"{art_color}{pad(row, INNER, 'center')}{W}"))
+    art_color = Y if flash == "boss" else (R if enraged else WHITE)
+    for row in boss_art():
+        lines.append(boxline(f"{art_color}{row}{W}"))
 
     lines.append(section("LEO"))
     lines.append(boxline(
-        f"  HP {bar(hero['hp'], hero['max_hp'], 24, G)} {hero['hp']}/{hero['max_hp']}   "
+        f"  HP {bar(hero['hp'], hero['max_hp'], 20, G)} {max(0, hero['hp'])}/{hero['max_hp']}   "
         f"Armor {B}{hero['armor']}{W}   "
-        f"Energy {bar(hero['energy'], hero['max_energy'], 18, Y)} {hero['energy']}/{hero['max_energy']}"
+        f"Energy {bar(hero['energy'], hero['max_energy'], 10, Y)} {hero['energy']}/{hero['max_energy']}"
     ))
 
     lines.append(section("ACTIONS"))
-    lines.append(boxline("  [1]🗡️ Claw Strike(2EN,10dmg)  [2]🛡️ Guard Stance(2EN,+9 armor)  [3]💚 Herbal Heal(3EN,+12HP)"))
-    lines.append(boxline("  [4]🔥 Sun Fang(4EN,18dmg)      [5]✨ Focus Breath(0EN,+2EN)     [Q] Flee"))
-    lines.append(boxline(f"  {DIM}Tip: If your attack isn't shielded, you gain +1 energy. If you block boss damage, you gain +1 energy.{W}"))
+    labels = [card_label(i, c) for i, c in enumerate(DECK, 1)] + ["[Q] Flee to menu"]
+    for i in range(0, len(labels), 2):
+        pair = labels[i:i + 2]
+        lines.append(boxline("  " + "".join(pad(l, 37) for l in pair)))
+    lines.append(boxline(f"  {DIM}Clean hit or block: +1 EN.  Drains never take you below "
+                         f"{ENERGY_FLOOR} EN.{W}"))
 
     lines.append(section("BATTLE LOG"))
-    show = battle_logs[-6:]
-    for i in range(6):
-        lines.append(boxline("  " + (show[i] if i < len(show) else "")))
-
+    for i in range(LOG_ROWS):
+        lines.append(boxline("  " + (battle_logs[i] if i < len(battle_logs) else "")))
     lines.append("╚" + "═"*INNER + "╝")
+    lines.append(status if status is not None
+                 else f"  {DIM}Press 1-{len(DECK)} to play a card, Q to flee.{W}")
     render(lines, FRAME_W)
 
 
@@ -856,41 +1172,43 @@ def animate(msg, flash=None, t=0.24):
 
 
 def check_phase():
-    if boss["phase"] == 1 and boss["hp"] > 0 and boss["hp"] <= boss["max_hp"] // 2:
+    cfg = boss["cfg"]
+    if (cfg["rage"] > 1 and boss["phase"] == 1
+            and 0 < boss["hp"] <= boss["max_hp"] // 2):
         boss["phase"] = 2
-        animate(f"{R}{BOLD}🐼 The Evil Panda enters RAGE mode!{W}", flash="boss", t=0.45)
+        animate(f"{R}{BOLD}{cfg['icon']} {boss['name']} enters RAGE mode!{W}", flash="boss", t=0.45)
 
 
 def resolve_player_attack(base_dmg, label):
-    global panda_shield
-    panda_shield = (random.random() < (1 / 3))
-    if panda_shield:
-        animate(f"{B}🛡️ Panda raises a cursed shield!{W}", flash="boss", t=0.22)
-        dmg = max(1, int(base_dmg * 0.35))
+    global boss_shield
+    boss_shield = random.random() < boss["cfg"]["shield"]
+    if boss_shield:
+        animate(f"{B}{boss['cfg']['shield_text']}{W}", flash="boss", t=0.22)
+        dmg = max(1, int(base_dmg * SHIELD_FACTOR))
     else:
         dmg = base_dmg
         hero["energy"] = min(hero["max_energy"], hero["energy"] + 1)
         animate(f"{Y}⚡ Clean hit! Leo gains +1 energy.{W}", flash="hero", t=0.18)
 
-    boss["hp"] -= dmg
+    boss["hp"] = max(0, boss["hp"] - dmg)
     animate(f"{R}{label} deals {dmg} damage!{W}", flash="boss", t=0.24)
-    panda_shield = False
+    boss_shield = False
     check_phase()
 
 
 def play_card(card):
-    global panda_pose
+    global boss_pose
     if card["cost"] > hero["energy"]:
-        blog(f"{R}Not enough energy!{W}")
+        blog(f"{R}Not enough energy for {card['name']}! Try ✨ Focus Breath.{W}")
         return False
 
     hero["energy"] -= card["cost"]
-    panda_pose += 1
+    boss_pose += 1
 
     if card["type"] == "dmg":
         crit = random.random() < 0.12
         dmg = card["val"] * 2 if crit else card["val"]
-        label = f"{card['icon']} {card['name']}" + (f" {BOLD}(CRIT){W}" if crit else "")
+        label = f"{card['icon']} {card['name']}" + (f" {BOLD}(CRIT){W}{R}" if crit else "")
         resolve_player_attack(dmg, label)
     elif card["type"] == "armor":
         hero["armor"] += card["val"]
@@ -907,260 +1225,200 @@ def play_card(card):
 
 
 def boss_action():
-    global panda_pose
+    global boss_pose
     if boss["hp"] <= 0:
         return
-    panda_pose += 1
+    boss_pose += 1
     move = boss["next_move"]
 
     if move["kind"] == "dmg":
-        raw = int(move["value"] * 1.4) if boss["phase"] == 2 else move["value"]
+        raw = boss_damage(move)
         blocked = min(hero["armor"], raw)
         actual = raw - blocked
-        hero["hp"] -= actual
-
+        hero["hp"] = max(0, hero["hp"] - actual)
         if blocked > 0:
             hero["energy"] = min(hero["max_energy"], hero["energy"] + 1)
-            animate(f"{B}🛡️ You blocked {blocked}! Counter-focus +1 energy.{W}", flash="hero", t=0.2)
-
+            animate(f"{B}✋ You blocked {blocked}! Counter-focus +1 energy.{W}", flash="hero", t=0.2)
         animate(f"{R}💥 {move['name']} hits for {actual} ({blocked} blocked){W}", flash="hero", t=0.3)
-    else:
-        drain = min(move["value"], hero["energy"])
+    elif move["kind"] == "drain":
+        drain = max(0, min(move["value"], hero["energy"] - ENERGY_FLOOR))
         hero["energy"] -= drain
-        animate(f"{M}😱 Dread Howl drains {drain} energy!{W}", flash="hero", t=0.28)
+        if drain:
+            animate(f"{M}😱 {move['name']} drains {drain} energy!{W}", flash="hero", t=0.28)
+        else:
+            animate(f"{M}😱 {move['name']}... Leo holds his focus!{W}", flash="hero", t=0.28)
+    elif move["kind"] == "heal":
+        amt = min(move["value"], boss["max_hp"] - boss["hp"])
+        boss["hp"] += amt
+        animate(f"{G}🌿 {move['name']}: the boss regrows {amt} HP{W}", flash="boss", t=0.28)
+    else:
+        animate(f"{DIM}{boss['name']} is {move['name'].lower()}... no attack.{W}", t=0.28)
 
     hero["armor"] = 0
-    boss["next_move"] = random.choice(BOSS_MOVES)
+    boss["next_move"] = pick_boss_move()
 
 
-def boss_intro(charge_bonus):
-    clear_screen()
+def boss_intro(level, charge_bonus):
+    cfg = BOSSES[level]
+    where = "the temple core" if level == NUM_LEVELS else "the guardian's lair"
     lines = box([
         "",
-        f"{BOLD}⛺ Leo reaches the temple core...{W}",
-        "The legendary treasure is near.",
+        f"{BOLD}Leo reaches {where}...{W}",
         "",
-        f"{R}{BOLD}🐼 THE EVIL PANDA GUARDIAN APPEARS!{W}",
+        f"{R}{BOLD}{cfg['icon']} {cfg['name']} APPEARS!{W}",
+        f"{C}{cfg['trait']}{W}",
         "",
         "Rules:",
-        "• Boss retaliates after each player action.",
-        "• Boss shield chance on your hits: 1/3.",
-        "• If your hit is NOT shielded: +1 energy.",
-        "• If you block boss damage: +1 energy.",
+        "• Each card costs energy (EN). The boss acts after every card.",
+        "• Watch the boss Intent: guard big hits, heal when low.",
+        "• A clean (unshielded) hit or a block gives +1 energy.",
+        f"• Energy drains never take you below {ENERGY_FLOOR} EN.",
         f"• Temple Charge bonus: +{charge_bonus} starting energy.",
         "",
         f"{Y}Press any key to fight.{W}",
         "",
-    ], width=66)
-    render(["", ""] + lines, 68)
-    wait_for_key()
-    flush_input()
-    clear_screen()
+    ], width=68)
+    pause_screen(["", ""] + lines)
 
 
 def boss_battle(level, charge_bonus):
     global battle_turn
     reset_battle(level, start_bonus_energy=charge_bonus)
+    boss_intro(level, charge_bonus)
+    blog(f"{Y}Battle starts!{W}")
 
-    with game_terminal():
-        check_size()
-        boss_intro(charge_bonus)
-        blog(f"{Y}Battle starts!{W}")
+    while hero["hp"] > 0 and boss["hp"] > 0:
+        draw_battle()
+        k = wait_for_key()
 
-        while hero["hp"] > 0 and boss["hp"] > 0:
-            draw_battle()
-            k = wait_for_key()
+        if k == "Q":
+            draw_battle(status=f"  {Y}Really flee to the menu? (Y/N){W}")
+            if wait_for_key({"Y", "N"}) == "Y":
+                return "quit"
+            continue
 
-            if k == "Q":
-                blog(f"{Y}Really flee? (Y/N){W}")
-                draw_battle()
-                if wait_for_key({"Y", "N"}) == "Y":
-                    return "quit"
-                if battle_logs:
-                    battle_logs.pop()
-                continue
-
-            acted = False
-            if k.isdigit():
-                idx = int(k)
-                if 1 <= idx <= len(DECK):
-                    acted = play_card(DECK[idx - 1])
-
-            if acted:
+        if k in CARD_KEYS:
+            if play_card(DECK[int(k) - 1]):
                 boss_action()
                 battle_turn += 1
+        else:
+            blog(f"{DIM}Press 1-{len(DECK)} to play a card, or Q to flee.{W}")
+        flush_input()  # ignore keys mashed during the animations
 
-            flush_input()
-
-        draw_battle()
-        if boss["hp"] <= 0:
-            print(f"\n  {G}{BOLD}🎉 VICTORY! Leo defeated the Evil Panda!{W}   {DIM}(press any key){W}")
-            wait_for_key()
-            return "victory"
-
-        print(f"\n  {R}{BOLD}💀 DEFEAT... Leo has fallen in the temple.{W}   {DIM}(press any key){W}")
+    won = boss["hp"] <= 0
+    if won:
+        status = f"  {G}{BOLD}🎉 VICTORY! Leo defeated {boss['name']}!{W}  {DIM}(press any key){W}"
+    else:
+        status = f"  {R}{BOLD}💀 DEFEAT... Leo has fallen.{W}  {DIM}(press any key){W}"
+    draw_battle(status=status)
+    time.sleep(0.5)
+    flush_input()
     wait_for_key()
-    return "defeat"
+    return "victory" if won else "defeat"
 
 
-def story_screen():
-    clear_screen()
-    lines = box([""] + STORY_LINES + ["", f"{Y}Press any key to continue...{W}"], width=90)
-    render([""] + lines, 92)
-    wait_for_key()
+# ============================================================ game flow =====
+
+def ask_yes_no(lines):
+    """Show a small boxed question; returns True for Y, False for N."""
+    return pause_screen(["", ""] + box(lines, width=56), valid={"Y", "N"}) == "Y"
 
 
 def run_level_with_boss(level):
-    global exp, unlocked_level
-    while True:
-        clear_screen()
-        
-        introlines_1 = box([
-            "",
-            f"{BOLD}🌠 LEVEL 1: THE STARRY CANYON 🌠{W}",
-            "",
-            "Leo decides to rest in a quiet nearby village for the night.",
-            "However, he is unaware that a strange meteorite struck the",
-            "nearby river upstream just hours before.",
-            "After drinking the tainted river water, the villagers have",
-            "begun to transform and behave abnormally...",
-            "",
-        ], width=64)
-        
-        introlines_2 = box([
-            "",
-            f"{BOLD}🧱 LEVEL 2: THE SPOOKY MANOR 🧱{W}",
-            "",
-            "While tracking the lost temple, a grand yet chilling manor",
-            "suddenly looms ahead in Leo's path.",
-            "As he approaches, he notices an eerie lack of life: plants",
-            "are withered, windows shattered, and dark vines choke the walls.",
-            "Though filled with dread, he knows he must step inside.",
-            "",
-        ], width=64)
-        
-        introlines_3 = box([
-            "",
-            f"{BOLD}🌳 LEVEL 3: THE MYSTERIOUS FOREST 🌳{W}",
-            "",
-            "Consulting his map, Leo realizes the temple is near. But a bizarre,",
-            "uncharted forest blocks his only route between towering cliffs.",
-            "Stepping inside, the air grows warm and thick with heavy fog,",
-            "and colossal, glowing flora tower above him.",
-            "He spots a vivid, unknown fruit; taking a single bite, a sudden,",
-            "surge of primal energy courses through his veins.",
-            "",
-        ], width=64)
-        
-        introlines_4 = box([
-            "",
-            f"{BOLD}🏯 LEVEL 4: THE INNER THRONE 🏯{W}",
-            "",
-            "Having endured trials of stars, shadows, and ancient flora,",
-            "Leo finally stands before the golden gates of the Inner Sanctuary.",
-            "The legendary treasure gleams in the distance—but guarding it",
-            "sits the ultimate master of the temple:",
-            "The ruthless, cosmic-powered Evil Panda.",
-            "Draw your sword, brave Leo. The final battle for glory begins now!",
-            "",
-        ], width=64)
+    global exp
+    while True:  # loops only when the player chooses to restart the level
+        level_intro(level)
 
-        introlinelist = [None, introlines_1, introlines_2, introlines_3, introlines_4]
-        
-        render(["", ""] + introlinelist[level], 66)
-        input("\n  Press Enter to start level...")
+        if level == NUM_LEVELS:  # final level: corridor cut-scene, then the boss
+            if not corridor_scene():
+                return
+            charge = MAX_BATTLE_CHARGE  # the ancient gate fully charges Leo
+        else:
+            result = play_level(level)
+            if result == "quit":
+                return
+            if result == "lost":
+                if ask_yes_no(["", f"{R}{BOLD}💀 YOU LOST IN THE MAZE{W}", "",
+                               "Restart this level? (Y/N)", ""]):
+                    continue
+                return
+            charge = battle_charge
 
-        result = play_level(level)
-
-        if result == "quit":
+        outcome = boss_battle(level, charge)
+        while outcome == "defeat":
+            if not ask_yes_no(["", f"{R}{BOLD}💀 Leo was defeated.{W}", "",
+                               "Try the boss again? (Y/N)", ""]):
+                return
+            outcome = boss_battle(level, charge)
+        if outcome == "quit":
             return
 
-        if result == "lost":
-            clear_screen()
-            print(f"\n  {R}{BOLD}💀 YOU LOST IN THE MAZE{W}")
-            if input("  Restart level? (y/n): ").strip().lower() == "y":
-                continue
-            sys.exit(0)
-
-        while True:
-            outcome = boss_battle(level, battle_charge)
-            if outcome == "defeat":
-                clear_screen()
-                if input("Try boss again? (y/n): ").strip().lower() == "y":
-                    continue
-            break
-
-        if outcome == "victory":
-            exp += 200
-            if level + 1 <= len(mazetotal) and (level + 1) not in unlocked_level:
-                unlocked_level.append(level + 1)
-
-            clear_screen()
-            print("\n".join(box([
-                "",
-                f"{G}{BOLD}🏆 LEVEL {level} COMPLETE!{W}",
-                "",
-                f"{Y}+200 XP   (Total: {exp}){W}",
-                "",
-                "Leo claims the Lost Temple treasure!",
-                "",
-            ], width=46)))
-            input("\nPress Enter to return to menu...")
+        exp += 200
+        if level < NUM_LEVELS and (level + 1) not in unlocked_level:
+            unlocked_level.append(level + 1)
+        if level == NUM_LEVELS:
+            ending = ["Leo claims the Lost Temple treasure!", "",
+                      f"{G}{BOLD}🎉 YOU WIN! Thanks for playing.{W}"]
+        else:
+            ending = [f"Level {level + 1} is now unlocked!"]
+        pause_screen(["", ""] + box([
+            "",
+            f"{G}{BOLD}🏆 LEVEL {level} COMPLETE!{W}",
+            "",
+            f"{Y}+200 XP   (Total: {exp}){W}",
+            "",
+        ] + ending + ["", f"{DIM}Press any key to return to the menu.{W}", ""], width=56))
         return
 
 
 def main_menu():
+    feedback = ""
     while True:
-        clear_screen()
-        print("\n".join(box([
+        lines = box([
             "",
             f"{BOLD}🏛️  THE LOST TEMPLE  🦁{W}",
-            f"{DIM}Navigate the maze. Survive the ghosts. Defeat the Evil Panda.{W}",
+            f"{DIM}Navigate the maze. Survive the ghosts. Defeat the guardians.{W}",
             "",
-        ], width=82)))
-        print()
-        for n in range(1, 5):
-            if n in unlocked_level:
-                tag = f"  {DIM}(coming soon){W}" if not mazetotal[n - 1] else ""
-            else:
-                tag = f"  {R}(Locked 🔒){W}"
-                
-            emoji = LEVEL_EMOJIS[n - 1] 
-            print(f"  {n}. Level {n} {emoji}{tag}")
-        print("  0. Exit Game\n")
+            f"Goal: clear all {NUM_LEVELS} levels and claim the temple treasure.",
+            f"Maze: WASD/arrows move. Solve the {maze_key} riddle, then reach {termina_l}.",
+            f"Avoid enemies. {lightning} = boss energy, {medkit} {ambulance} = healing.",
+            "Boss: press 1-5 to play cards. Win to unlock the next level.",
+            "",
+        ], width=70)
+        lines.append("")
+        for n in range(1, NUM_LEVELS + 1):
+            tag = "" if n in unlocked_level else f"  {R}(Locked 🔒){W}"
+            lines.append(f"     {n}. Level {n} {LEVEL_EMOJIS[n - 1]} {LEVEL_NAMES[n - 1].title()}{tag}")
+        lines += ["     0. Exit Game", "", f"  {feedback}",
+                  f"  Select an option (0-{NUM_LEVELS})."]
+        render(lines, 72)
+        flush_input()
 
-        choice = input("Select an option (0-4): ").strip()
-
-        if choice in ["1", "2", "3", "4"]:
+        choice = wait_for_key()
+        feedback = ""
+        if choice in {str(n) for n in range(1, NUM_LEVELS + 1)}:
             lv = int(choice)
             if lv not in unlocked_level:
-                print(f"\n{R}Level {lv} is locked! You must complete the previous level first.{W}")
-                time.sleep(1.2)
+                feedback = f"{R}Level {lv} is locked! Complete level {lv - 1} first.{W}"
                 continue
-
             run_level_with_boss(lv)
-        elif choice == "0":
-            print("Goodbye!")
-            sys.exit(0)
+        elif choice in ("0", "Q"):
+            return
         else:
-            print("Invalid choice.")
-            time.sleep(0.8)
+            feedback = f"{R}Invalid choice. Press a number from 0 to {NUM_LEVELS}.{W}"
 
 
 def main():
-    if not sys.stdin.isatty():
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("This game needs an interactive terminal. (Use -it with Docker)")
         return
-
     try:
-        d = input("Start Leo's Lost Temple adventure? (y/n): ").strip().lower()
-        if d != "y":
-            print("Goodbye!")
-            return
-        story_screen()
-        main_menu()
+        with game_terminal():
+            story_screen()
+            main_menu()
     except KeyboardInterrupt:
-        print("\nGame Over")
+        pass
+    print("Goodbye! Thanks for playing The Lost Temple.")
 
 
 if __name__ == "__main__":
