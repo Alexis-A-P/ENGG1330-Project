@@ -2,7 +2,7 @@
 
 A terminal-based adventure game. You play **Leo**, a lion exploring an ancient temple: navigate mazes, solve puzzles, collect keys, and face a guardian at the end of every level.
 
-**Course:** 1330 · **Subclass:** D · **Group:** 7
+**Course:** ENGG1330 · **Subclass:** 1D · **Group:** 7
 
 ---
 
