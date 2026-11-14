@@ -15,4 +15,4 @@ RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt && python -m p
 WORKDIR /workspace
 USER student
 ENTRYPOINT ["/usr/local/bin/course_entrypoint"]
-CMD ["python", "tic_tac_toe.py"]
+CMD ["python", "project.py"]
