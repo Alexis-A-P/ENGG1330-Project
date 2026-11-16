@@ -228,25 +228,26 @@ The table below lists the specific checks we ran by hand. Each one behaved as de
 | 1 | Normal play | Played Level 1 from start to finish: solved the riddle, took the key, left the maze, and beat the Meteor Golem | The level was cleared and Level 2 unlocked |
 | 2 | Wrong action | Pressed a key that is not on the main menu | The menu stayed open and showed "Invalid choice. Press a number from 0 to 4." |
 | 3 | Wrong action | Chose Level 3 before clearing Level 2 | The level did not start: "Level 3 is locked! Complete level 2 first." |
-| 4 | Wrong action | Picked a wrong option in the Guardian's Riddle | "D is wrong! Try again." appeared and we could answer again |
+| 4 | Wrong action | Picked a wrong option in the Guardian's Riddle | "D is wrong! Try again." appeared, and we could answer again |
 | 5 | Boundary case | Shrank the terminal below 80 × 24 in the middle of a level | Play paused with a "Please resize to 80x24" message, and the same screen came back once the window was enlarged |
 | 6 | Win condition | Cleared all four levels and defeated the Evil Panda | "Leo claims the Lost Temple treasure!" and "YOU WIN! Thanks for playing." were shown |
-| 7 | Restart | Lost all HP in a maze, then lost a Boss battle | The game offered "Restart this level? (Y/N)" and "Try the boss again? (Y/N)", and `Y` started each one again |
+| 7 | Restart | Lost all HP in a maze, then lost a Boss battle | The game offered "Restart this level? (Y/N)" and "Try the boss again? (Y/N)" and `Y` started each one again |
 | 8 | Restart | Exited the game and ran the command again | The game started fresh with only Level 1 unlocked |
 
 ## Known Limitations
 
 - **Session-only progress:** progress is stored in memory. Closing the program resets XP and unlocked levels.
-- **Terminal requirements:** the game requires an interactive terminal of at least 80 × 24 characters. Emoji appearance and alignment may vary between terminal fonts.
-- **Fixed puzzle answers:** the three puzzles use fixed questions and answers, so their replay challenge is limited.
-- **English text input:** the Sphinx's Riddle accepts a predefined set of English answers. Other wording may be rejected even if it expresses the same idea.
+- **Terminal requirements:** The game requires an interactive terminal of at least 80 × 24 characters. Emoji appearance and alignment may vary between terminal fonts.
+- **Fixed puzzle answers:** The three puzzles use fixed questions and answers, so their replay challenge is limited.
+- **English text input:** The Sphinx's Riddle accepts a predefined set of English answers. Other wording may be rejected even if it expresses the same idea.
 
 ## Member Contributions
 
 | Member | Main Responsibilities |
 |---|---|
 | Ma Lo | Background story and the three puzzles, including question design, answer checking, and integration with key collection. Produced the fifth section of the demo video, covering the boss system, final level, and victory sequence, including gameplay footage, voice-over, editing, and code highlights. |
-| Xue Leshan | Designed the overall game framework and game flow, engineered the turn-based boss battle logic, interfaces, and stats system, implemented the pseudo-3D corridor part. Produced, editted, and narrated the first four sections of the technical demo video.|
+| Xue Leshan | Designed the overall game framework and game flow, engineered the turn-based boss battle logic, interfaces, and stats system, and implemented the pseudo-3D corridor part. Produced, edited, and narrated the first four sections of the technical demo video.|
+| Aadarsha Pudasaini | Integrated the different game components together, worked on overall game framework design, created and implemented the initial boss battle design, contributed to the last two parts of the technical video/demo, created a GitHub repository for team collaboration, implemented several game concepts, and organized code. |
 | _TODO_ | Documentation and video production |
 
 ## Sources and Acknowledgements
