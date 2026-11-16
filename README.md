@@ -252,4 +252,4 @@ The table below lists the specific checks we ran by hand. Each one behaved as de
 
 ## Sources and Acknowledgements
 
-The game code, mazes, story, and battle system are our group's own work. The puzzles build on well-known riddles, and the container files come from the course starter. Full details of what we created, borrowed, and adapted are in [`ACKNOWLEDGEMENTS.md`](acknowledgements.md). Our use of generative AI is recorded in `ai_use.md`.
+The game code, mazes, story, and battle system are our group's own work. The puzzles build on well-known riddles, and the container files come from the course starter. Full details of what we created, borrowed, and adapted are in [`acknowledgements.md`](acknowledgements.md). Our use of generative AI is recorded in `ai_use.md`.
