@@ -244,7 +244,7 @@ The table below lists the specific checks we ran by hand. Each one behaved as de
 
 | Member | Main Responsibilities |
 |---|---|
-| Ma Lo | Background story and the three puzzles, including question design, answer checking, and integration with key collection |
+| Ma Lo | Background story and the three puzzles, including question design, answer checking, and integration with key collection. Produced the fifth section of the demo video, covering the boss system, final level, and victory sequence, including gameplay footage, voice-over, editing, and code highlights. |
 | _TODO_ | Documentation and video production |
 
 ## Sources and Acknowledgements
