@@ -212,6 +212,7 @@ The code includes keyboard handling for Windows, macOS, and Linux.
 | Where | Details |
 |---|---|
 | macOS | MacBook Air (Apple Silicon), using VS Code |
+| macOS | MacBook Pro (Apple Silicon), using VS Code |
 | GitHub Codespaces | Cloud Linux workspace, using its VS Code terminal |
 
 ## Testing
@@ -245,6 +246,7 @@ The table below lists the specific checks we ran by hand. Each one behaved as de
 | Member | Main Responsibilities |
 |---|---|
 | Ma Lo | Background story and the three puzzles, including question design, answer checking, and integration with key collection. Produced the fifth section of the demo video, covering the boss system, final level, and victory sequence, including gameplay footage, voice-over, editing, and code highlights. |
+| Xue Leshan | Designed the overall game framework and game flow, engineered the turn-based boss battle logic, interfaces, and stats system, implemented the pseudo-3D corridor part. Produced, editted, and narrated the first four sections of the technical demo video.|
 | _TODO_ | Documentation and video production |
 
 ## Sources and Acknowledgements
