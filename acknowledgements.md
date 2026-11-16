@@ -27,7 +27,7 @@ Apart from the items listed further down, everything in `main.py` is our group's
 
 ## Tools
 
-We wrote and tested the game with Visual Studio Code, GitHub, GitHub Codespaces, and Docker. During the production of introduction videos, AI(Google Gemini, Canva AI) were used to achieve better visual effects
+We wrote and tested the game with Visual Studio Code, GitHub, GitHub Codespaces, and Docker. 
 
 ## Thanks
 
