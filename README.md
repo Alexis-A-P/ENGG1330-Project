@@ -213,6 +213,7 @@ The code includes keyboard handling for Windows, macOS, and Linux.
 |---|---|
 | macOS | MacBook Air (Apple Silicon), using VS Code |
 | macOS | MacBook Pro (Apple Silicon), using VS Code |
+| Windows11 | AMD RYZEN, using VS Code |
 | GitHub Codespaces | Cloud Linux workspace, using its VS Code terminal |
 
 ## Testing
@@ -248,6 +249,7 @@ The table below lists the specific checks we ran by hand. Each one behaved as de
 | Ma Lo | Background story and the three puzzles, including question design, answer checking, and integration with key collection. Produced the fifth section of the demo video, covering the boss system, final level, and victory sequence, including gameplay footage, voice-over, editing, and code highlights. |
 | Xue Leshan | Designed the overall game framework and game flow, engineered the turn-based boss battle logic, interfaces, and stats system, and implemented the pseudo-3D corridor part. Produced, edited, and narrated the first four sections of the technical demo video.|
 | Aadarsha Pudasaini | Integrated the different game components together, worked on overall game framework design, created and implemented the initial boss battle design, contributed to the last two parts of the technical video/demo, created a GitHub repository for team collaboration, implemented several game concepts, and organized code. |
+| Yinyuan Li | Designed the maps, corresponding background stories and improved their visual effects, engineered the random moving algorithms of enemies and the menus, the levels selection part, integrated miscellaneous features in the game(eg. healing system, theif system, etc), and finally produced the trailor video |
 | _TODO_ | Documentation and video production |
 
 ## Sources and Acknowledgements
