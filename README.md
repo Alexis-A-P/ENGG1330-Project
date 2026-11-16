@@ -8,6 +8,7 @@ A terminal-based adventure game. You play **Leo**, a lion exploring an ancient t
 
 ## Table of Contents
 
+- [How to Run](#how-to-run)
 - [Story Background](#story-background)
 - [Game Objective](#game-objective)
 - [Main Features](#main-features)
@@ -24,8 +25,22 @@ A terminal-based adventure game. You play **Leo**, a lion exploring an ancient t
 - [Testing](#testing)
 - [Known Limitations](#known-limitations)
 - [Member Contributions](#member-contributions)
+- [Sources and Acknowledgements](#sources-and-acknowledgements)
 
 ---
+
+## How to Run
+
+The game is made for the ENGG1330 course container, version **`engg1330-project:2026-v03`** (Python 3.13). It needs no extra packages and no changes to the container.
+
+Open a terminal in the folder that contains `project_docker`, then run:
+
+```bash
+cd project_docker
+docker compose run --rm game
+```
+
+The game starts straight away. To restart it, exit and run the same command again.
 
 ## Story Background
 
@@ -166,6 +181,12 @@ After defeat, you may retry the Boss battle. Winning unlocks the next level, or 
 
 ## Runtime Environment
 
+### Course Container
+
+- **Container version:** `engg1330-project:2026-v03`
+- **Python:** 3.13
+- **Run command:** see [How to Run](#how-to-run)
+
 ### Python Libraries
 
 The game uses Python's standard library only (`os`, `sys`, `time`, `random`, `re`, `shutil`, `textwrap`, `unicodedata`, `collections`, `contextlib`). **No third-party packages are required.**
@@ -180,19 +201,37 @@ Keyboard handling uses `msvcrt` on Windows and `tty`, `termios`, and `select` on
 
 The game pauses and displays a resize message when the terminal becomes smaller than 80 × 24. Play resumes after you enlarge the terminal.
 
-When running through Docker, an interactive terminal must be allocated using the appropriate `-it` options.
+The command in [How to Run](#how-to-run) already opens an interactive terminal, so no extra Docker options are needed.
 
 ## Compatibility
 
 The code includes keyboard handling for Windows, macOS, and Linux.
 
-> **Tested environments:** _TODO: record the operating systems, Python versions, and terminals you actually tested on._
+**Tested environments**
+
+| Where | Details |
+|---|---|
+| macOS | MacBook Air (Apple Silicon), using VS Code |
+| GitHub Codespaces | Cloud Linux workspace, using its VS Code terminal |
 
 ## Testing
 
 The group tested the complete gameplay sequence, including maze exploration, all three puzzles, key collection, map recovery, the corridor scene, and all four Boss battles.
 
 Movement, answer checking, item effects, combat actions, level unlocking, and restart options worked as expected during playtesting. Transitions between mazes, puzzles, Boss battles, and menus also worked correctly, allowing the game to be played through to the final victory.
+
+The table below lists the specific checks we ran by hand. Each one behaved as described.
+
+| # | Type | What we did | What happened |
+|---|---|---|---|
+| 1 | Normal play | Played Level 1 from start to finish: solved the riddle, took the key, left the maze, and beat the Meteor Golem | The level was cleared and Level 2 unlocked |
+| 2 | Wrong action | Pressed a key that is not on the main menu | The menu stayed open and showed "Invalid choice. Press a number from 0 to 4." |
+| 3 | Wrong action | Chose Level 3 before clearing Level 2 | The level did not start: "Level 3 is locked! Complete level 2 first." |
+| 4 | Wrong action | Picked a wrong option in the Guardian's Riddle | "D is wrong! Try again." appeared and we could answer again |
+| 5 | Boundary case | Shrank the terminal below 80 × 24 in the middle of a level | Play paused with a "Please resize to 80x24" message, and the same screen came back once the window was enlarged |
+| 6 | Win condition | Cleared all four levels and defeated the Evil Panda | "Leo claims the Lost Temple treasure!" and "YOU WIN! Thanks for playing." were shown |
+| 7 | Restart | Lost all HP in a maze, then lost a Boss battle | The game offered "Restart this level? (Y/N)" and "Try the boss again? (Y/N)", and `Y` started each one again |
+| 8 | Restart | Exited the game and ran the command again | The game started fresh with only Level 1 unlocked |
 
 ## Known Limitations
 
@@ -207,3 +246,7 @@ Movement, answer checking, item effects, combat actions, level unlocking, and re
 |---|---|
 | Ma Lo | Background story and the three puzzles, including question design, answer checking, and integration with key collection |
 | _TODO_ | Documentation and video production |
+
+## Sources and Acknowledgements
+
+The game code, mazes, story, and battle system are our group's own work. The puzzles build on well-known riddles, and the container files come from the course starter. Full details of what we created, borrowed, and adapted are in [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md). Our use of generative AI is recorded in `ai_use.md`.
